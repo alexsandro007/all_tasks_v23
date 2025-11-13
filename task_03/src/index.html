@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Рейтинги игр и фильмов</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <h1>Рейтинги игр и фильмов</h1>
+        <div class="controls">
+            <input type="text" id="search" placeholder="Поиск по названию...">
+            <button id="refresh">Обновить</button>
+        </div>
+    </header>
+    <main>
+        <div id="status">
+            <!-- Loading, error, empty states -->
+        </div>
+        <div id="list" class="item-list">
+            <!-- Items will be rendered here -->
+        </div>
+        <div id="pagination" class="pagination">
+            <!-- Pagination buttons -->
+        </div>
+    </main>
+    <script src="main.js"></script>
+</body>
+</html>
