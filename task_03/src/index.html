@@ -3,28 +3,65 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Рейтинги игр и фильмов</title>
+    <title>Рейтинги ТВ-шоу - Лабораторная работа 03</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <header>
-        <h1>Рейтинги игр и фильмов</h1>
+    <div class="container">
+        <header>
+            <h1>📺 Рейтинги ТВ-шоу</h1>
+            <p class="subtitle">Поиск сериалов и ТВ-шоу с кэшированием и управлением запросами</p>
+        </header>
+
         <div class="controls">
-            <input type="text" id="search" placeholder="Поиск по названию...">
-            <button id="refresh">Обновить</button>
+            <div class="search-container">
+                <input 
+                    type="text" 
+                    id="searchInput" 
+                    placeholder="Поиск сериалов по названию (например: Friends, Breaking Bad)..."
+                    autocomplete="off"
+                >
+                <button id="searchBtn" class="btn-primary">Искать</button>
+            </div>
+            
+            <div class="button-group">
+                <button id="refreshBtn" class="btn-secondary">🔄 Обновить (игнорировать кэш)</button>
+                <button id="clearCacheBtn" class="btn-secondary">🗑️ Очистить кэш</button>
+            </div>
+
+            <div class="stats">
+                <span id="cacheStats">Кэш: 0 записей</span>
+                <span id="requestStats">Запросов: 0</span>
+            </div>
         </div>
-    </header>
-    <main>
-        <div id="status">
-            <!-- Loading, error, empty states -->
+
+        <div id="loadingIndicator" class="loading-indicator" style="display: none;">
+            <div class="spinner"></div>
+            <p>Загрузка данных...</p>
+            <p id="retryInfo" class="retry-info"></p>
         </div>
-        <div id="list" class="item-list">
-            <!-- Items will be rendered here -->
+
+        <div id="errorMessage" class="error-message" style="display: none;"></div>
+
+        <div id="gamesList" class="games-list"></div>
+
+        <div id="emptyState" class="empty-state" style="display: none;">
+            <p>🔍 Сериалы не найдены</p>
+            <p>Попробуйте изменить поисковый запрос</p>
         </div>
-        <div id="pagination" class="pagination">
-            <!-- Pagination buttons -->
+
+        <div class="pagination" id="pagination" style="display: none;">
+            <button id="prevBtn" class="btn-pagination">← Назад</button>
+            <span id="pageInfo">Страница 1</span>
+            <button id="nextBtn" class="btn-pagination">Вперёд →</button>
         </div>
-    </main>
-    <script src="main.js"></script>
+    </div>
+
+    <footer>
+        <p>Лабораторная работа 03 | Вариант 23: Рейтинги ТВ-шоу с кэшированием</p>
+        <p class="tech-info">Использует TVMaze API | fetch + retry + timeout + AbortController</p>
+    </footer>
+
+    <script src="./main.js"></script>
 </body>
 </html>

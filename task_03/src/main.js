@@ -1,18 +1,91 @@
-// Utility functions
+// ============================================
+// Конфигурация
+// ============================================
+const CONFIG = {
+    BASE_URL: 'https://api.tvmaze.com',
+    PAGE_SIZE: 12,
+    RETRY_ATTEMPTS: 3,
+    RETRY_BACKOFF_MS: 1000,
+    TIMEOUT_MS: 10000,
+    CACHE_TTL_MS: 5 * 60 * 1000 // 5 минут
+};
+
+// ============================================
+// Простой кэш с TTL (Time To Live)
+// ============================================
+class SimpleCache {
+    constructor(ttl) {
+        this.cache = new Map();
+        this.ttl = ttl;
+    }
+
+    set(key, value) {
+        this.cache.set(key, {
+            value,
+            timestamp: Date.now()
+        });
+    }
+
+    get(key) {
+        const item = this.cache.get(key);
+        if (!item) return null;
+
+        const age = Date.now() - item.timestamp;
+        if (age > this.ttl) {
+            this.cache.delete(key);
+            return null;
+        }
+
+        return item.value;
+    }
+
+    has(key) {
+        return this.get(key) !== null;
+    }
+
+    clear() {
+        this.cache.clear();
+    }
+
+    size() {
+        // Удаляем устаревшие записи перед подсчётом
+        for (const [key, item] of this.cache.entries()) {
+            const age = Date.now() - item.timestamp;
+            if (age > this.ttl) {
+                this.cache.delete(key);
+            }
+        }
+        return this.cache.size;
+    }
+}
+
+// ============================================
+// Fetch с retry, timeout и AbortController
+// ============================================
 async function fetchWithRetry(url, options = {}) {
-    const { retries = 3, backoffMs = 1000, timeoutMs = 5000, signal } = options;
+    const {
+        retries = CONFIG.RETRY_ATTEMPTS,
+        backoffMs = CONFIG.RETRY_BACKOFF_MS,
+        timeoutMs = CONFIG.TIMEOUT_MS,
+        signal
+    } = options;
+
+    let lastError;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        // Создаём AbortController для таймаута
+        const timeoutController = new AbortController();
+        const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
 
-            // Merge signals if both provided
-            const mergedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+        // Объединяем сигналы отмены
+        const combinedSignal = signal || timeoutController.signal;
+
+        try {
+            updateRetryInfo(attempt, retries);
 
             const response = await fetch(url, {
                 ...options,
-                signal: mergedSignal
+                signal: combinedSignal
             });
 
             clearTimeout(timeoutId);
@@ -21,305 +94,363 @@ async function fetchWithRetry(url, options = {}) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
 
-            return response;
+            return await response.json();
+
         } catch (error) {
+            clearTimeout(timeoutId);
+            lastError = error;
+
+            // Если запрос отменён пользователем - не повторяем
             if (error.name === 'AbortError') {
-                throw error; // Don't retry on abort
+                throw new Error('Запрос отменён');
             }
 
+            // Последняя попытка - бросаем ошибку
             if (attempt === retries) {
-                throw error;
+                break;
             }
 
-            // Wait before retrying
-            await new Promise(resolve => setTimeout(resolve, backoffMs * Math.pow(2, attempt)));
+            // Экспоненциальная задержка: 1s, 2s, 4s
+            const delay = backoffMs * Math.pow(2, attempt);
+            await sleep(delay);
         }
+    }
+
+    throw new Error(`Не удалось загрузить данные после ${retries + 1} попыток: ${lastError.message}`);
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function updateRetryInfo(attempt, maxRetries) {
+    const retryInfoEl = document.getElementById('retryInfo');
+    if (attempt > 0) {
+        retryInfoEl.textContent = `Повторная попытка ${attempt}/${maxRetries}...`;
+    } else {
+        retryInfoEl.textContent = '';
     }
 }
 
-// Cache implementation
-class Cache {
-    constructor(ttlMs = 5 * 60 * 1000) { // 5 minutes default
-        this.cache = new Map();
-        this.ttl = ttlMs;
-    }
-
-    set(key, value) {
-        const expiry = Date.now() + this.ttl;
-        this.cache.set(key, { value, expiry });
-
-        // Also store in localStorage for persistence
-        try {
-            localStorage.setItem(`cache_${key}`, JSON.stringify({ value, expiry }));
-        } catch (e) {
-            // localStorage might be full or disabled
-        }
-    }
-
-    get(key) {
-        // Check memory cache first
-        let item = this.cache.get(key);
-        if (!item) {
-            // Check localStorage
-            try {
-                const stored = localStorage.getItem(`cache_${key}`);
-                if (stored) {
-                    item = JSON.parse(stored);
-                    this.cache.set(key, item); // Restore to memory
-                }
-            } catch (e) {
-                // localStorage error
-            }
-        }
-
-        if (!item) return null;
-
-        if (Date.now() > item.expiry) {
-            this.cache.delete(key);
-            try {
-                localStorage.removeItem(`cache_${key}`);
-            } catch (e) {}
-            return null;
-        }
-
-        return item.value;
-    }
-
-    clear() {
-        this.cache.clear();
-        // Clear localStorage cache items
-        try {
-            for (let key in localStorage) {
-                if (key.startsWith('cache_')) {
-                    localStorage.removeItem(key);
-                }
-            }
-        } catch (e) {}
-    }
-}
-
-// Global cache instance
-const cache = new Cache();
-
-// Debounce utility
-function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-    };
-}
-
-// Main application
-class App {
+// ============================================
+// API клиент
+// ============================================
+class GamesAPI {
     constructor() {
-        this.items = [];
-        this.filteredItems = [];
-        this.currentPage = 1;
-        this.itemsPerPage = 10;
-        this.searchQuery = '';
-        this.isLoading = false;
-        this.error = null;
-        this.currentController = null;
-
-        this.init();
+        this.cache = new SimpleCache(CONFIG.CACHE_TTL_MS);
+        this.abortController = null;
+        this.requestCount = 0;
     }
 
-    init() {
-        this.bindEvents();
-        this.loadItems();
+    buildUrl(endpoint, params = {}) {
+        const url = new URL(`${CONFIG.BASE_URL}${endpoint}`);
+        
+        for (const [key, value] of Object.entries(params)) {
+            if (value !== null && value !== undefined) {
+                url.searchParams.set(key, value);
+            }
+        }
+        
+        return url.toString();
     }
 
-    bindEvents() {
-        const searchInput = document.getElementById('search');
-        const refreshBtn = document.getElementById('refresh');
+    async fetchGames(searchQuery = '', page = 1, ignoreCache = false) {
+        // Отменяем предыдущий запрос
+        if (this.abortController) {
+            this.abortController.abort();
+        }
 
-        searchInput.addEventListener('input', debounce((e) => {
-            this.searchQuery = e.target.value.toLowerCase();
-            this.currentPage = 1;
-            this.loadItems();
-        }, 300));
+        this.abortController = new AbortController();
 
-        refreshBtn.addEventListener('click', () => {
-            cache.clear();
-            this.loadItems();
+        const cacheKey = `shows_${searchQuery}_${page}`;
+
+        // Проверяем кэш
+        if (!ignoreCache && this.cache.has(cacheKey)) {
+            console.log('✅ Данные взяты из кэша:', cacheKey);
+            return this.cache.get(cacheKey);
+        }
+
+        let url;
+        
+        if (searchQuery) {
+            // Поиск по названию
+            url = this.buildUrl('/search/shows', { q: searchQuery });
+        } else {
+            // Получаем популярные шоу (через schedule)
+            url = `${CONFIG.BASE_URL}/shows?page=${page - 1}`;
+        }
+
+        this.requestCount++;
+        updateRequestStats(this.requestCount);
+
+        console.log('🌐 Запрос к API:', url);
+
+        let data = await fetchWithRetry(url, {
+            signal: this.abortController.signal
         });
-    }
 
-    async loadItems() {
-        // Cancel previous request
-        if (this.currentController) {
-            this.currentController.abort();
+        // Нормализуем ответ для поиска
+        if (searchQuery && Array.isArray(data)) {
+            // Результат поиска возвращает массив с {show: ...}
+            data = {
+                results: data.slice((page - 1) * CONFIG.PAGE_SIZE, page * CONFIG.PAGE_SIZE).map(item => item.show),
+                total: data.length
+            };
+        } else if (Array.isArray(data)) {
+            // Обычный список шоу
+            const startIdx = (page - 1) * CONFIG.PAGE_SIZE;
+            data = {
+                results: data.slice(0, CONFIG.PAGE_SIZE),
+                total: 250 // TVMaze имеет 250 страниц
+            };
         }
 
-        this.currentController = new AbortController();
-        this.isLoading = true;
-        this.error = null;
-        this.render();
+        // Сохраняем в кэш
+        this.cache.set(cacheKey, data);
+        updateCacheStats(this.cache.size());
 
+        return data;
+    }
+
+    clearCache() {
+        this.cache.clear();
+        updateCacheStats(0);
+        console.log('🗑️ Кэш очищен');
+    }
+
+    getCacheSize() {
+        return this.cache.size();
+    }
+}
+
+// ============================================
+// UI управление
+// ============================================
+class GamesUI {
+    constructor(api) {
+        this.api = api;
+        this.currentPage = 1;
+        this.currentSearch = '';
+        this.totalPages = 1;
+        
+        this.initElements();
+        this.attachEventListeners();
+    }
+
+    initElements() {
+        this.searchInput = document.getElementById('searchInput');
+        this.searchBtn = document.getElementById('searchBtn');
+        this.refreshBtn = document.getElementById('refreshBtn');
+        this.clearCacheBtn = document.getElementById('clearCacheBtn');
+        this.gamesList = document.getElementById('gamesList');
+        this.loadingIndicator = document.getElementById('loadingIndicator');
+        this.errorMessage = document.getElementById('errorMessage');
+        this.emptyState = document.getElementById('emptyState');
+        this.pagination = document.getElementById('pagination');
+        this.prevBtn = document.getElementById('prevBtn');
+        this.nextBtn = document.getElementById('nextBtn');
+        this.pageInfo = document.getElementById('pageInfo');
+    }
+
+    attachEventListeners() {
+        this.searchBtn.addEventListener('click', () => this.handleSearch());
+        this.searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') this.handleSearch();
+        });
+        
+        this.refreshBtn.addEventListener('click', () => this.handleRefresh());
+        this.clearCacheBtn.addEventListener('click', () => this.handleClearCache());
+        
+        this.prevBtn.addEventListener('click', () => this.handlePrevPage());
+        this.nextBtn.addEventListener('click', () => this.handleNextPage());
+    }
+
+    async handleSearch() {
+        this.currentSearch = this.searchInput.value.trim();
+        this.currentPage = 1;
+        await this.loadGames();
+    }
+
+    async handleRefresh() {
+        await this.loadGames(true);
+    }
+
+    handleClearCache() {
+        this.api.clearCache();
+        this.showMessage('Кэш успешно очищен', 'success');
+    }
+
+    async handlePrevPage() {
+        if (this.currentPage > 1) {
+            this.currentPage--;
+            await this.loadGames();
+        }
+    }
+
+    async handleNextPage() {
+        if (this.currentPage < this.totalPages) {
+            this.currentPage++;
+            await this.loadGames();
+        }
+    }
+
+    async loadGames(ignoreCache = false) {
         try {
-            const cacheKey = `items_${this.searchQuery}`;
-            let data = cache.get(cacheKey);
+            this.showLoading();
+            this.hideError();
+            this.hideEmpty();
 
-            if (!data) {
-                const response = await fetchWithRetry('./data.json', {
-                    signal: this.currentController.signal,
-                    retries: 2,
-                    backoffMs: 500,
-                    timeoutMs: 3000
-                });
-                data = await response.json();
+            const data = await this.api.fetchGames(this.currentSearch, this.currentPage, ignoreCache);
 
-                // Filter by search query
-                if (this.searchQuery) {
-                    data = data.filter(item =>
-                        item.title.toLowerCase().includes(this.searchQuery) ||
-                        item.description.toLowerCase().includes(this.searchQuery)
-                    );
-                }
-
-                cache.set(cacheKey, data);
+            if (!data.results || data.results.length === 0) {
+                this.showEmpty();
+                this.hidePagination();
+            } else {
+                this.renderGames(data.results);
+                this.updatePagination(data);
             }
 
-            this.items = data;
-            console.log(data);
-            
-            this.filteredItems = data;
-            this.paginateItems();
         } catch (error) {
-            if (error.name === 'AbortError') {
-                return; // Request was cancelled
-            }
-            this.error = error.message;
+            console.error('Ошибка загрузки:', error);
+            this.showError(error.message);
         } finally {
-            this.isLoading = false;
-            this.render();
+            this.hideLoading();
         }
     }
 
-    paginateItems() {
-        const start = (this.currentPage - 1) * this.itemsPerPage;
-        const end = start + this.itemsPerPage;
-        this.filteredItems = this.items.slice(start, end);
+    showLoading() {
+        this.loadingIndicator.style.display = 'block';
+        this.gamesList.innerHTML = this.createSkeletons(6);
     }
 
-    changePage(page) {
-        this.currentPage = page;
-        this.paginateItems();
-        this.render();
+    hideLoading() {
+        this.loadingIndicator.style.display = 'none';
     }
 
-    render() {
-        this.renderStatus();
-        this.renderList();
-        this.renderPagination();
+    showError(message) {
+        this.errorMessage.textContent = `❌ Ошибка: ${message}`;
+        this.errorMessage.style.display = 'block';
+        this.gamesList.innerHTML = '';
+        this.hidePagination();
     }
 
-    renderStatus() {
-        const statusEl = document.getElementById('status');
-        statusEl.innerHTML = '';
-
-        if (this.isLoading) {
-            statusEl.innerHTML = `
-                <div class="loading">
-                    <div class="spinner"></div>
-                    <p>Загрузка...</p>
-                </div>
-            `;
-        } else if (this.error) {
-            statusEl.innerHTML = `
-                <div class="error">
-                    <p>Ошибка: ${this.error}</p>
-                    <button onclick="app.loadItems()">Повторить</button>
-                </div>
-            `;
-        } else if (this.items.length === 0) {
-            statusEl.innerHTML = `
-                <div class="empty">
-                    <p>Ничего не найдено</p>
-                </div>
-            `;
-        }
+    hideError() {
+        this.errorMessage.style.display = 'none';
     }
 
-    renderList() {
-        const listEl = document.getElementById('list');
+    showEmpty() {
+        this.emptyState.style.display = 'block';
+        this.gamesList.innerHTML = '';
+    }
 
-        if (this.isLoading) {
-            listEl.innerHTML = Array(6).fill().map(() => `
-                <div class="skeleton-card">
-                    <div class="skeleton skeleton-image"></div>
+    hideEmpty() {
+        this.emptyState.style.display = 'none';
+    }
+
+    showMessage(message, type = 'info') {
+        const msgEl = this.errorMessage;
+        msgEl.textContent = message;
+        msgEl.style.background = type === 'success' 
+            ? 'rgba(16, 185, 129, 0.1)' 
+            : 'rgba(239, 68, 68, 0.1)';
+        msgEl.style.borderColor = type === 'success' ? '#10b981' : '#ef4444';
+        msgEl.style.color = type === 'success' ? '#10b981' : '#ef4444';
+        msgEl.style.display = 'block';
+
+        setTimeout(() => {
+            msgEl.style.display = 'none';
+        }, 3000);
+    }
+
+    createSkeletons(count) {
+        return Array.from({ length: count }, () => `
+            <div class="skeleton-card">
+                <div class="skeleton skeleton-image"></div>
+                <div class="skeleton-content">
                     <div class="skeleton skeleton-title"></div>
-                    <div class="skeleton skeleton-rating"></div>
-                    <div class="skeleton skeleton-description"></div>
-                    <div class="skeleton skeleton-description"></div>
-                </div>
-            `).join('');
-            return;
-        }
-
-        listEl.innerHTML = this.filteredItems.map(item => `
-            <div class="item-card">
-                <img src="${item.image}" alt="${item.title}" class="item-image" loading="lazy">
-                <div class="item-content">
-                    <h3 class="item-title">${item.title} (${item.year})</h3>
-                    <div class="item-rating">
-                        <span class="stars">${'★'.repeat(Math.floor(item.rating))}</span>
-                        <span class="rating-value">${item.rating}/10</span>
-                    </div>
-                    <p class="item-description">${item.description}</p>
-                    <span class="item-type">${item.type === 'movie' ? 'Фильм' : 'Игра'}</span>
+                    <div class="skeleton skeleton-text"></div>
+                    <div class="skeleton skeleton-text"></div>
                 </div>
             </div>
         `).join('');
     }
 
-    renderPagination() {
-        const paginationEl = document.getElementById('pagination');
-        const totalPages = Math.ceil(this.items.length / this.itemsPerPage);
+    renderGames(games) {
+        this.gamesList.innerHTML = games.map(game => this.createGameCard(game)).join('');
+    }
 
-        if (totalPages <= 1) {
-            paginationEl.innerHTML = '';
-            return;
-        }
+    createGameCard(game) {
+        const rating = game.rating?.average || 0;
+        const stars = '⭐'.repeat(Math.round(rating / 2));
+        const genres = game.genres?.slice(0, 3) || [];
+        const premiered = game.premiered ? new Date(game.premiered).getFullYear() : 'N/A';
+        const posterPath = game.image?.medium || 'https://via.placeholder.com/210x295?text=No+Image';
+        const status = game.status || 'Unknown';
+        const language = game.language || 'EN';
 
-        let buttons = [];
+        return `
+            <div class="game-card">
+                <img 
+                    src="${posterPath}" 
+                    alt="${game.name}"
+                    class="game-image"
+                    loading="lazy"
+                >
+                <div class="game-content">
+                    <h3 class="game-title">${game.name}</h3>
+                    <div class="game-rating">
+                        <span class="rating-value">${rating.toFixed(1)}</span>
+                        <span class="rating-stars">${stars}</span>
+                    </div>
+                    <div class="game-meta">
+                        📅 ${premiered} | 📺 ${status}
+                    </div>
+                    <div class="game-platforms">
+                        ${genres.map(g => `<span class="platform-tag">${g}</span>`).join('')}
+                        ${language ? `<span class="platform-tag">${language}</span>` : ''}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
 
-        // Previous button
-        buttons.push(`<button class="page-btn" ${this.currentPage === 1 ? 'disabled' : ''} onclick="app.changePage(${this.currentPage - 1})">‹</button>`);
+    updatePagination(data) {
+        const totalResults = data.total || 0;
+        this.totalPages = Math.ceil(totalResults / CONFIG.PAGE_SIZE) || 20; // По умолчанию 20 страниц
+        
+        this.pageInfo.textContent = `Страница ${this.currentPage} из ${Math.min(this.totalPages, 20)}`;
+        this.prevBtn.disabled = this.currentPage === 1;
+        this.nextBtn.disabled = this.currentPage >= 20; // Ограничиваем 20 страницами
+        
+        this.pagination.style.display = 'flex';
+    }
 
-        // Page numbers
-        const startPage = Math.max(1, this.currentPage - 2);
-        const endPage = Math.min(totalPages, this.currentPage + 2);
-
-        if (startPage > 1) {
-            buttons.push(`<button class="page-btn" onclick="app.changePage(1)">1</button>`);
-            if (startPage > 2) {
-                buttons.push('<span>...</span>');
-            }
-        }
-
-        for (let i = startPage; i <= endPage; i++) {
-            buttons.push(`<button class="page-btn ${i === this.currentPage ? 'active' : ''}" onclick="app.changePage(${i})">${i}</button>`);
-        }
-
-        if (endPage < totalPages) {
-            if (endPage < totalPages - 1) {
-                buttons.push('<span>...</span>');
-            }
-            buttons.push(`<button class="page-btn" onclick="app.changePage(${totalPages})">${totalPages}</button>`);
-        }
-
-        // Next button
-        buttons.push(`<button class="page-btn" ${this.currentPage === totalPages ? 'disabled' : ''} onclick="app.changePage(${this.currentPage + 1})">›</button>`);
-
-        paginationEl.innerHTML = buttons.join('');
+    hidePagination() {
+        this.pagination.style.display = 'none';
     }
 }
 
-// Initialize app
-const app = new App();
+// ============================================
+// Вспомогательные функции для статистики
+// ============================================
+function updateCacheStats(size) {
+    document.getElementById('cacheStats').textContent = `Кэш: ${size} записей`;
+}
+
+function updateRequestStats(count) {
+    document.getElementById('requestStats').textContent = `Запросов: ${count}`;
+}
+
+// ============================================
+// Инициализация приложения
+// ============================================
+document.addEventListener('DOMContentLoaded', () => {
+    const api = new GamesAPI();
+    const ui = new GamesUI(api);
+    
+    // Загружаем популярные игры при старте
+    ui.loadGames();
+    
+    console.log('✅ Приложение инициализировано');
+    console.log('💡 Используйте DevTools → Network для просмотра кэширования');
+});
