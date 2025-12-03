@@ -1,0 +1,71 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: task_08/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./task_08
+        run: npm ci
+
+      - name: Build task_08
+        working-directory: ./task_08
+        run: npm run build
+
+      - name: Prepare deployment directory
+        run: |
+          mkdir -p _site
+          # Copy root files
+          cp index.html _site/
+          cp style.css _site/
+          cp README.md _site/
+          # Copy task directories
+          cp -r task_01 _site/
+          cp -r task_02 _site/
+          cp -r task_03 _site/
+          cp -r task_04 _site/
+          # Copy task_08 build
+          mkdir -p _site/task_08
+          cp -r task_08/dist/* _site/task_08/
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v2
+        with:
+          path: ./_site
+
+  deploy:
+    name: Deploy
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v3
