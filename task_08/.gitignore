@@ -8,6 +8,10 @@ dist/
 build/
 .vite/
 
+# Deployed files (copied from dist for local testing)
+/index.html
+/assets/
+
 # Testing
 coverage/
 .nyc_output/
