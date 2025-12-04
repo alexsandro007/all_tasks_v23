@@ -12,13 +12,6 @@ dist
 dist-ssr
 *.local
 
-# Deployed files (copied from dist for local/GitHub Pages)
-/index.html
-/assets/
-/favicon.svg
-/logo.svg
-/vite.svg
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
