@@ -27,7 +27,9 @@ jobs:
         with:
           node-version: '18'
           cache: 'npm'
-          cache-dependency-path: task_08/package-lock.json
+          cache-dependency-path: |
+            task_07/package-lock.json
+            task_08/package-lock.json
 
       - name: Install dependencies
         working-directory: ./task_08
@@ -36,6 +38,10 @@ jobs:
       - name: Build task_08
         working-directory: ./task_08
         run: npm run build
+
+      - name: Build task_07
+        working-directory: ./task_07
+        run: npm ci && npm run build
 
       - name: Prepare deployment directory
         run: |
@@ -49,6 +55,9 @@ jobs:
           cp -r task_02 _site/
           cp -r task_03 _site/
           cp -r task_04 _site/
+          # Copy task_07 build
+          mkdir -p _site/task_07
+          cp -r task_07/dist/* _site/task_07/
           # Copy task_08 build
           mkdir -p _site/task_08
           cp -r task_08/dist/* _site/task_08/
